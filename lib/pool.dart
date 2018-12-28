@@ -125,6 +125,111 @@ class Pool {
     }
   }
 
+  /// Errors thrown from iterating [sourceItems] or because [isClosed] is `true`
+  /// will not be passed to [onError] and will always be added to the returned
+  /// stream.
+  Stream<T> forEach<S, T>(Iterable<S> sourceItems, FutureOr<T> action(S source),
+      {bool onError(S item, Object error, StackTrace stack)}) {
+    onError ??= (item, e, s) => true;
+
+    Completer cancelCompleter;
+
+    var count = 1;
+
+    bool canceled() => cancelCompleter != null;
+
+    var controller = StreamController<T>(onCancel: () async {
+      if (count > 0) {
+        print('...canceling with count $count');
+        assert(cancelCompleter == null);
+        cancelCompleter = Completer();
+        await cancelCompleter.future;
+        print('cancel done!');
+      }
+    });
+
+    var startedItems = 0;
+    var finishedItems = 0;
+    var skippedItems = 0;
+
+    Future<void> finish() async {
+      count--;
+      if (canceled()) {
+        print([count, startedItems, finishedItems, skippedItems]);
+      }
+      try {
+        assert(count >= 0);
+        if (count == 0) {
+          print('closing');
+          cancelCompleter?.complete();
+          await controller.close();
+          print('closed!');
+        }
+      } catch (e, stack) {
+        Zone.current.handleUncaughtError(e, stack);
+      }
+    }
+
+    void process() async {
+      try {
+        for (var item in sourceItems) {
+          startedItems++;
+          print('looking at $startedItems');
+
+          assert(!canceled());
+          final resource = await request();
+
+          if (canceled()) {
+            break;
+          }
+          count++;
+
+          assert(!canceled());
+
+          Timer.run(() async {
+            try {
+              if (canceled()) {
+                print('skipping work!');
+                skippedItems++;
+                return;
+              }
+              T value;
+              try {
+                value = await action(item);
+              } catch (e, stack) {
+                assert(!canceled());
+                if (onError(item, e, stack)) {
+                  print('adding error');
+                  controller.addError(e, stack);
+                  print('added error');
+                }
+                return;
+              }
+              controller.add(value);
+              finishedItems++;
+            } catch (e, stack) {
+              print('gah!');
+              Zone.current.handleUncaughtError(e, stack);
+            } finally {
+              resource.release();
+              await finish();
+            }
+          });
+        }
+      } catch (e, stack) {
+        print('doh! $e');
+        Zone.current.runBinaryGuarded(controller.addError, e, stack);
+      } finally {
+        print('all done!');
+        await finish();
+      }
+    }
+
+    Timer.run(process);
+
+    return controller.stream;
+  }
+
   /// Closes the pool so that no more resources are requested.
   ///
   /// Existing resource requests remain unchanged.
