@@ -446,44 +446,84 @@ void main() {
         test('poolSize: $poolSize, itemCount: $itemCount', () async {
           var pool = Pool(poolSize);
 
-          var finishedItems = 0;
+          try {
+            var finishedItems = 0;
 
-          await for (var item in pool.forEach(
-              Iterable.generate(itemCount, (i) {
-                expect(i, lessThanOrEqualTo(finishedItems + poolSize),
-                    reason: 'the iterator should be called lazily');
-                return i;
-              }),
-              delayedToString)) {
-            expect(int.parse(item), lessThan(itemCount));
-            finishedItems++;
+            await for (var item in pool.forEach(
+                Iterable.generate(itemCount, (i) {
+                  expect(i, lessThanOrEqualTo(finishedItems + poolSize),
+                      reason: 'the iterator should be called lazily');
+                  return i;
+                }),
+                delayedToString)) {
+              expect(int.parse(item), lessThan(itemCount));
+              finishedItems++;
+            }
+
+            expect(finishedItems, itemCount);
+          } finally {
+            await pool.close();
           }
-
-          expect(finishedItems, itemCount);
         });
       }
     }
+
+    test('partial iteration', () async {
+      var pool = Pool(5);
+
+      var stream = pool.forEach(Iterable<int>.generate(100), delayedToString);
+
+      expect(await stream.take(10).toList(), hasLength(10));
+      await pool.close();
+    });
+
+    group('silly', () {
+      for (var i = 0; i < 1; i++) {
+        test('silly #$i', () async {
+          var pool = Pool(5);
+
+          var stream =
+              pool.forEach(Iterable<int>.generate(100), delayedToString);
+
+          var subscription = stream.listen((data) {
+            print(data);
+          }, onError: (e) {
+            fail('should never get here!');
+          });
+
+          await subscription.cancel();
+          print('test done?');
+        });
+      }
+    });
 
     group('errors', () {
       Future<void> errorInIterator(void errorAction(Pool pool),
           {bool onError(int item, Object error, StackTrace stack)}) async {
         var pool = Pool(20);
 
-        var listFuture = pool
-            .forEach(
-                Iterable.generate(100, (i) {
-                  if (i == 50) {
-                    errorAction(pool);
-                  }
+        try {
+          var listFuture = pool
+              .forEach(
+                  Iterable.generate(100, (i) {
+                    if (i == 50) {
+                      errorAction(pool);
+                    }
 
-                  return i;
-                }),
-                delayedToString,
-                onError: onError)
-            .toList();
+                    return i;
+                  }),
+                  delayedToString,
+                  onError: onError)
+              .toList();
 
-        await expectLater(() async => await listFuture, throwsStateError);
-        print('test finished');
+          await expectLater(() async => await listFuture, throwsStateError);
+          print('test finished');
+
+          await Future.delayed(Duration(seconds: 1));
+          print('delayed!');
+        } finally {
+          await pool.close();
+        }
       }
 
       test('iteration, no onError', () async {
@@ -503,8 +543,7 @@ void main() {
       test('error in action, no onError', () async {
         var pool = Pool(20);
 
-        var listFuture =
-            pool.forEach(Iterable.generate(100, (i) => i), (i) async {
+        var listFuture = pool.forEach(Iterable<int>.generate(100), (i) async {
           await Future.delayed(Duration(milliseconds: 10));
           if (i == 10) {
             print('boo on 10');
@@ -515,13 +554,13 @@ void main() {
 
         await expectLater(() async => await listFuture, throwsUnsupportedError);
         print('test finished');
+        await pool.close();
       });
 
       test('error in action, no onError', () async {
         var pool = Pool(20);
 
-        var list =
-            await pool.forEach(Iterable.generate(100, (i) => i), (i) async {
+        var list = await pool.forEach(Iterable<int>.generate(100), (i) async {
           await Future.delayed(Duration(milliseconds: 10));
           if (i % 10 == 0) {
             throw UnsupportedError('10 is not supported');

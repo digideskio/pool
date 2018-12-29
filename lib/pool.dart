@@ -174,17 +174,20 @@ class Pool {
       try {
         for (var item in sourceItems) {
           startedItems++;
-          print('looking at $startedItems');
-
-          assert(!canceled());
-          final resource = await request();
+          //print('looking at $startedItems');
 
           if (canceled()) {
+            // If canceled, don't bother requesting a resource
+            break;
+          }
+          final resource = await request();
+          if (canceled()) {
+            // If canceled, avoid scheduling the async operation. Tear-down
+            // eagerly.
+            resource.release();
             break;
           }
           count++;
-
-          assert(!canceled());
 
           Timer.run(() async {
             try {
@@ -218,7 +221,12 @@ class Pool {
         }
       } catch (e, stack) {
         print('doh! $e');
-        Zone.current.runBinaryGuarded(controller.addError, e, stack);
+        if (canceled()) {
+          // TODO(kevmoo): likely going to cleanup before shipping
+          Zone.current.handleUncaughtError(e, stack);
+        } else {
+          Zone.current.runBinaryGuarded(controller.addError, e, stack);
+        }
       } finally {
         print('all done!');
         await finish();
